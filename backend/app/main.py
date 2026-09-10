@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
@@ -60,6 +60,9 @@ def deactivate_crate(crate_id: int, db: Session = Depends(get_db)):
 def add_issue(db, crate, event, issue_type, reason):
     db.add(Issue(crate_id=crate.id, event_id=event.id, issue_type=issue_type, occurred_at=event.occurred_at, reason=reason))
 
+def conflict_409(batch_no, event_no):
+    return HTTPException(409, f"事件编号已存在: {event_no}（周转箱 {event_no[len(batch_no) + 1:]}）")
+
 def apply_event(db, crate, event):
     """单笔与批量登记共用的状态推导与风险识别。"""
     if event.event_type == "issue":
@@ -107,17 +110,26 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
         if len(no) > 60: raise HTTPException(422, f"事件编号超长（批次编号+箱号不超过60字符）: {no}")
     existing = set(db.scalars(select(Event.event_no).where(Event.event_no.in_(event_nos))).all())
     if existing:
-        conflict = sorted(existing)[0]
-        raise HTTPException(409, f"事件编号已存在: {conflict}（周转箱 {conflict[len(data.batch_no) + 1:]}）")
+        raise conflict_409(data.batch_no, sorted(existing)[0])
     results = []
-    for code, event_no in zip(data.crate_codes, event_nos):
-        crate = crates[code]
-        event = Event(event_no=event_no, crate_id=crate.id, event_type=data.event_type,
-                      occurred_at=data.occurred_at, operator=data.operator, description=data.description)
-        db.add(event); db.flush()
-        apply_event(db, crate, event)
-        results.append(BatchEventResult(crate_code=code, event_no=event_no, event=EventOut.model_validate(event)))
-    db.commit()
+    try:
+        for code, event_no in zip(data.crate_codes, event_nos):
+            crate = crates[code]
+            event = Event(event_no=event_no, crate_id=crate.id, event_type=data.event_type,
+                          occurred_at=data.occurred_at, operator=data.operator, description=data.description)
+            db.add(event); db.flush()
+            apply_event(db, crate, event)
+            results.append(BatchEventResult(crate_code=code, event_no=event_no, event=EventOut.model_validate(event)))
+        db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        # 同一批次被并发提交：预检通过后对方抢先落库。整批回滚并指出具体冲突箱号
+        db.rollback()
+        if isinstance(exc, OperationalError) and "locked" not in str(exc).lower(): raise
+        existing = set(db.scalars(select(Event.event_no).where(Event.event_no.in_(event_nos))).all())
+        conflict = next((no for no in event_nos if no in existing), None)
+        if conflict: raise conflict_409(data.batch_no, conflict)
+        if isinstance(exc, IntegrityError): raise conflict_409(data.batch_no, event_nos[0])
+        raise HTTPException(409, "提交与其他操作冲突，请刷新后重试")
     return EventBatchOut(batch_no=data.batch_no, results=results)
 
 @app.get("/api/events", response_model=list[EventOut])

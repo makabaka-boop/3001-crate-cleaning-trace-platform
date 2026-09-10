@@ -3,8 +3,11 @@ os.environ["DATABASE_URL"] = "sqlite:///./test_crate_trace.db"
 from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
-from app.database import Base, engine
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from app.database import Base, engine, get_db, SessionLocal
 from app.main import app
+from app.models import Crate, Event
 
 @pytest.fixture(autouse=True)
 def clean_db():
@@ -124,6 +127,51 @@ def test_batch_validation_errors(client):
                                                   "occurred_at": NOW.isoformat(), "operator": "A",
                                                   "crate_codes": ["BX-1"]}).status_code == 422
     assert client.get("/api/events").json() == []
+
+def raced_db(batch_no, code, blow_up=None):
+    """模拟并发请求：本批校验通过后、写入前，另一连接抢先提交同一批次。"""
+    raced = {"done": False}
+    def get_raced_db():
+        db = SessionLocal()
+        orig_flush = db.flush
+        def flush(*args, **kwargs):
+            if not raced["done"]:
+                raced["done"] = True
+                other = SessionLocal()
+                rival = other.scalar(select(Crate).where(Crate.code == code))
+                other.add(Event(event_no=f"{batch_no}-{code}", crate_id=rival.id, event_type="wash",
+                                occurred_at=NOW, operator="并发操作人", description=""))
+                other.commit(); other.close()
+                if blow_up: blow_up()
+            return orig_flush(*args, **kwargs)
+        db.flush = flush
+        try:
+            yield db
+        finally:
+            db.close()
+    return get_raced_db
+
+def assert_raced_batch_conflict(client, batch_no, blow_up=None):
+    crate(client, "BX-1"); crate(client, "BX-2")
+    app.dependency_overrides[get_db] = raced_db(batch_no, "BX-2", blow_up)
+    try:
+        r = batch(client, ["BX-1", "BX-2"], batch_no=batch_no)
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert f"{batch_no}-BX-2" in detail and "BX-2" in detail
+    assert [e["event_no"] for e in client.get("/api/events").json()] == [f"{batch_no}-BX-2"]
+    crates = crates_by_code(client)
+    assert crates["BX-1"]["cleaning_status"] == "dirty" and crates["BX-1"]["location"] == "仓库"
+
+def test_batch_concurrent_lock_conflict_names_crate(client):
+    assert_raced_batch_conflict(client, "PCH-X")
+
+def test_batch_concurrent_integrity_conflict_names_crate(client):
+    def blow_up():
+        raise IntegrityError("INSERT INTO events ...", None, Exception("UNIQUE constraint failed: events.event_no"))
+    assert_raced_batch_conflict(client, "PCH-I", blow_up)
 
 def test_single_event_regression_after_batch(client):
     crate(client, "BX-1", "dirty")
