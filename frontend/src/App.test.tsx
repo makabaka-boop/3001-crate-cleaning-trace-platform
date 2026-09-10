@@ -48,3 +48,37 @@ test('batch failure keeps form content for retry',async()=>{
  await waitFor(()=>expect(screen.getByText(/批量登记成功/)).toBeInTheDocument());
  expect(bodies).toHaveLength(2);expect(bodies[1].crate_codes).toEqual(['BX-404']);
 });
+test('batch failure clears previous success result table',async()=>{
+ let fail=false;
+ global.fetch=vi.fn((url,opts)=>{const u=String(url);
+  if(u.includes('/events/batch')){const b=JSON.parse(String(opts?.body));
+   if(fail)return Promise.resolve({ok:false,status:404,json:()=>Promise.resolve({detail:'周转箱编号不存在: BX-404'})});
+   return Promise.resolve({ok:true,json:()=>Promise.resolve({batch_no:b.batch_no,results:b.crate_codes.map((c:string)=>({crate_code:c,event_no:`${b.batch_no}-${c}`,event:{}}))})})}
+  return Promise.resolve({ok:true,json:()=>Promise.resolve(u.includes('dashboard')?dash:[])})}) as any;
+ await openBatch();fillBatchForm();
+ fireEvent.change(screen.getByLabelText(/逐项录入箱号/),{target:{value:'BX-001'}});
+ fireEvent.click(screen.getByRole('button',{name:'添加箱号'}));
+ fireEvent.click(screen.getByRole('button',{name:/提交批量事件/}));
+ await waitFor(()=>expect(screen.getByText('PCH-1-BX-001')).toBeInTheDocument());
+ expect(screen.getByText('批量处理结果')).toBeInTheDocument();
+ fail=true;fillBatchForm();
+ fireEvent.change(screen.getByLabelText(/逐项录入箱号/),{target:{value:'BX-404'}});
+ fireEvent.click(screen.getByRole('button',{name:'添加箱号'}));
+ fireEvent.click(screen.getByRole('button',{name:/提交批量事件/}));
+ await waitFor(()=>expect(screen.getByText('周转箱编号不存在: BX-404')).toBeInTheDocument());
+ expect(screen.queryByText('批量处理结果')).not.toBeInTheDocument();
+ expect(screen.queryByText('PCH-1-BX-001')).not.toBeInTheDocument();
+});
+test('double clicking batch submit sends only one request',async()=>{
+ const bodies:any[]=[];
+ global.fetch=vi.fn((url,opts)=>{const u=String(url);
+  if(u.includes('/events/batch')){bodies.push(JSON.parse(String(opts?.body)));return new Promise(()=>{})}
+  return Promise.resolve({ok:true,json:()=>Promise.resolve(u.includes('dashboard')?dash:[])})}) as any;
+ await openBatch();fillBatchForm();
+ fireEvent.change(screen.getByLabelText(/逐项录入箱号/),{target:{value:'BX-001'}});
+ fireEvent.click(screen.getByRole('button',{name:'添加箱号'}));
+ const btn=screen.getByRole('button',{name:/提交批量事件/});
+ fireEvent.click(btn);fireEvent.click(btn);
+ await waitFor(()=>expect(btn).toBeDisabled());
+ expect(bodies).toHaveLength(1);
+});

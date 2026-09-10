@@ -22,7 +22,7 @@ class Crate(Base):
 class Event(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(primary_key=True)
-    event_no: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    event_no: Mapped[str] = mapped_column(String(101), unique=True, index=True)
     crate_id: Mapped[int] = mapped_column(ForeignKey("crates.id"), index=True)
     event_type: Mapped[str] = mapped_column(String(20))
     occurred_at: Mapped[datetime] = mapped_column(DateTime, index=True)

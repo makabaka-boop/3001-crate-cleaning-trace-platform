@@ -1,14 +1,19 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 CleaningStatus = Literal["clean", "dirty", "unknown"]
 EventType = Literal["inbound", "issue", "return", "wash", "inspect", "isolate"]
 IssueStatus = Literal["pending", "confirmed", "false_positive", "closed"]
 
+# 周转箱编号格式：与 CrateBase.code 一致，批量登记时逐箱校验
+CrateCode = Annotated[str, Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")]
+# 事件编号上限：批次编号(50) + "-" + 箱号(50)
+EVENT_NO_MAX_LENGTH = 101
+
 class CrateBase(BaseModel):
-    code: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    code: CrateCode
     name: str = Field(min_length=1, max_length=100)
     location: str = Field(min_length=1, max_length=100)
     cleaning_status: CleaningStatus = "unknown"
@@ -54,7 +59,7 @@ class EventBatchCreate(BaseModel):
     occurred_at: datetime
     operator: str = Field(min_length=1, max_length=80)
     description: str = ""
-    crate_codes: list[str] = Field(min_length=1, max_length=500)
+    crate_codes: list[CrateCode] = Field(min_length=1, max_length=500)
 
 class BatchEventResult(BaseModel):
     crate_code: str

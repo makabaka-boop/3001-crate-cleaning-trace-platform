@@ -165,6 +165,27 @@ def assert_raced_batch_conflict(client, batch_no, blow_up=None):
     crates = crates_by_code(client)
     assert crates["BX-1"]["cleaning_status"] == "dirty" and crates["BX-1"]["location"] == "仓库"
 
+def test_batch_blank_crate_code_rejected_at_validation(client):
+    crate(client, "BX-1")
+    before = client.get("/api/crates").json()
+    for bad in (["   "], ["BX-1", "  \t  "]):
+        r = batch(client, bad, batch_no="PCH-11")
+        assert r.status_code == 422
+    assert client.get("/api/events").json() == []
+    assert client.get("/api/crates").json() == before
+
+def test_batch_max_length_batch_no_and_crate_code_accepted(client):
+    code = "BX" + "1" * 48          # 箱号上限 50 字符
+    batch_no = "PCH" + "2" * 47     # 批次编号上限 50 字符
+    crate(client, code)
+    r = batch(client, [code], batch_no=batch_no)
+    assert r.status_code == 201
+    event_no = f"{batch_no}-{code}"
+    assert len(event_no) == 101
+    assert r.json()["results"][0]["event_no"] == event_no
+    assert [e["event_no"] for e in client.get("/api/events").json()] == [event_no]
+    assert crates_by_code(client)[code]["cleaning_status"] == "clean"
+
 def test_batch_concurrent_lock_conflict_names_crate(client):
     assert_raced_batch_conflict(client, "PCH-X")
 

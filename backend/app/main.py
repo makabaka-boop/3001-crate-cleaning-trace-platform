@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
-from .schemas import (BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
+from .schemas import (EVENT_NO_MAX_LENGTH, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
                       EventCreate, EventOut, IssueOut, IssueUpdate)
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
@@ -107,7 +107,7 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
         crates[code] = crate
     event_nos = [f"{data.batch_no}-{code}" for code in data.crate_codes]
     for no in event_nos:
-        if len(no) > 60: raise HTTPException(422, f"事件编号超长（批次编号+箱号不超过60字符）: {no}")
+        if len(no) > EVENT_NO_MAX_LENGTH: raise HTTPException(422, f"事件编号超长（批次编号+连接符+箱号不超过{EVENT_NO_MAX_LENGTH}字符）: {no}")
     existing = set(db.scalars(select(Event.event_no).where(Event.event_no.in_(event_nos))).all())
     if existing:
         raise conflict_409(data.batch_no, sorted(existing)[0])
