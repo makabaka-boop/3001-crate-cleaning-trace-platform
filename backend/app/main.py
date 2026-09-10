@@ -10,7 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
-from .schemas import CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventCreate, EventOut, IssueOut, IssueUpdate
+from .schemas import (BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
+                      EventCreate, EventOut, IssueOut, IssueUpdate)
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
 
@@ -59,6 +60,22 @@ def deactivate_crate(crate_id: int, db: Session = Depends(get_db)):
 def add_issue(db, crate, event, issue_type, reason):
     db.add(Issue(crate_id=crate.id, event_id=event.id, issue_type=issue_type, occurred_at=event.occurred_at, reason=reason))
 
+def apply_event(db, crate, event):
+    """单笔与批量登记共用的状态推导与风险识别。"""
+    if event.event_type == "issue":
+        if crate.cleaning_status != "clean": add_issue(db, crate, event, "reuse_without_wash", "周转箱未清洗即再次领用")
+        if crate.isolated: add_issue(db, crate, event, "use_while_isolated", "周转箱处于隔离状态仍被领用")
+        cutoff = event.occurred_at - timedelta(days=INSPECTION_VALID_DAYS)
+        if not crate.last_inspected_at or crate.last_inspected_at < cutoff:
+            add_issue(db, crate, event, "expired_inspection", f"最近检查已超过{INSPECTION_VALID_DAYS}天有效期")
+        crate.cleaning_status = "dirty"
+        crate.location = "使用中"
+    elif event.event_type == "wash": crate.cleaning_status = "clean"; crate.location = "清洗区"
+    elif event.event_type == "inspect": crate.last_inspected_at = event.occurred_at; crate.isolated = False
+    elif event.event_type == "isolate": crate.isolated = True; crate.location = "隔离区"
+    elif event.event_type == "return": crate.cleaning_status = "dirty"; crate.location = "待清洗区"
+    elif event.event_type == "inbound": crate.location = "仓库"
+
 @app.post("/api/events", response_model=EventOut, status_code=201)
 def create_event(data: EventCreate, db: Session = Depends(get_db)):
     crate = db.scalar(select(Crate).where(Crate.code == data.crate_code))
@@ -69,20 +86,39 @@ def create_event(data: EventCreate, db: Session = Depends(get_db)):
     try: db.flush()
     except IntegrityError:
         db.rollback(); raise HTTPException(409, "事件编号已存在")
-    if data.event_type == "issue":
-        if crate.cleaning_status != "clean": add_issue(db, crate, event, "reuse_without_wash", "周转箱未清洗即再次领用")
-        if crate.isolated: add_issue(db, crate, event, "use_while_isolated", "周转箱处于隔离状态仍被领用")
-        cutoff = data.occurred_at - timedelta(days=INSPECTION_VALID_DAYS)
-        if not crate.last_inspected_at or crate.last_inspected_at < cutoff:
-            add_issue(db, crate, event, "expired_inspection", f"最近检查已超过{INSPECTION_VALID_DAYS}天有效期")
-        crate.cleaning_status = "dirty"
-        crate.location = "使用中"
-    elif data.event_type == "wash": crate.cleaning_status = "clean"; crate.location = "清洗区"
-    elif data.event_type == "inspect": crate.last_inspected_at = data.occurred_at; crate.isolated = False
-    elif data.event_type == "isolate": crate.isolated = True; crate.location = "隔离区"
-    elif data.event_type == "return": crate.cleaning_status = "dirty"; crate.location = "待清洗区"
-    elif data.event_type == "inbound": crate.location = "仓库"
+    apply_event(db, crate, event)
     db.commit(); db.refresh(event); return event
+
+@app.post("/api/events/batch", response_model=EventBatchOut, status_code=201)
+def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
+    seen: set[str] = set()
+    for code in data.crate_codes:
+        if code in seen:
+            raise HTTPException(409, f"批次内周转箱编号重复: {code}")
+        seen.add(code)
+    crates: dict[str, Crate] = {}
+    for code in data.crate_codes:
+        crate = db.scalar(select(Crate).where(Crate.code == code))
+        if not crate: raise HTTPException(404, f"周转箱编号不存在: {code}")
+        if not crate.active: raise HTTPException(409, f"周转箱已停用，不能登记事件: {code}")
+        crates[code] = crate
+    event_nos = [f"{data.batch_no}-{code}" for code in data.crate_codes]
+    for no in event_nos:
+        if len(no) > 60: raise HTTPException(422, f"事件编号超长（批次编号+箱号不超过60字符）: {no}")
+    existing = set(db.scalars(select(Event.event_no).where(Event.event_no.in_(event_nos))).all())
+    if existing:
+        conflict = sorted(existing)[0]
+        raise HTTPException(409, f"事件编号已存在: {conflict}（周转箱 {conflict[len(data.batch_no) + 1:]}）")
+    results = []
+    for code, event_no in zip(data.crate_codes, event_nos):
+        crate = crates[code]
+        event = Event(event_no=event_no, crate_id=crate.id, event_type=data.event_type,
+                      occurred_at=data.occurred_at, operator=data.operator, description=data.description)
+        db.add(event); db.flush()
+        apply_event(db, crate, event)
+        results.append(BatchEventResult(crate_code=code, event_no=event_no, event=EventOut.model_validate(event)))
+    db.commit()
+    return EventBatchOut(batch_no=data.batch_no, results=results)
 
 @app.get("/api/events", response_model=list[EventOut])
 def list_events(crate_code: Optional[str] = None, event_type: Optional[str] = None, db: Session = Depends(get_db)):

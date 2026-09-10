@@ -6,6 +6,7 @@
 
 - 周转箱：新增、编辑 API、停用，维护唯一编号、名称、位置、清洁状态与备注。
 - 流转记录：入库、领用、归还、清洗、检查、隔离；事件编号唯一。
+- 批量登记：登记流转页支持批量模式，填写批次编号后粘贴或逐项录入箱号，事件编号按“批次编号-箱号”生成，提交前提示重复箱号；后端单事务校验并逐箱执行与单笔一致的状态推导与风险识别，任一箱不存在、已停用或编号冲突即整批回滚并返回具体箱号。
 - 状态推导：事件登记后更新位置、清洁状态、隔离状态及最近检查时间。
 - 风险识别：未清洗再次领用、已隔离仍领用、检查超过 30 天有效期仍使用。
 - 问题闭环：待处理、已确认、误报、已关闭，支持处理说明。
@@ -53,7 +54,7 @@ cd frontend && npm test && npm run build
 ## API 摘要
 
 - `GET/POST /api/crates`；`PUT /api/crates/{id}`；`POST /api/crates/{id}/deactivate`
-- `GET/POST /api/events`
+- `GET/POST /api/events`；`POST /api/events/batch`（批量登记，事件编号为“批次编号-箱号”，整批单事务校验，任一失败全部回滚）
 - `GET /api/issues`；`PATCH /api/issues/{id}`
 - `GET /api/dashboard`；`GET /api/health`
 

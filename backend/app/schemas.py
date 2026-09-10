@@ -48,6 +48,23 @@ class EventOut(BaseModel):
     operator: str
     description: str
 
+class EventBatchCreate(BaseModel):
+    batch_no: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    event_type: EventType
+    occurred_at: datetime
+    operator: str = Field(min_length=1, max_length=80)
+    description: str = ""
+    crate_codes: list[str] = Field(min_length=1, max_length=500)
+
+class BatchEventResult(BaseModel):
+    crate_code: str
+    event_no: str
+    event: EventOut
+
+class EventBatchOut(BaseModel):
+    batch_no: str
+    results: list[BatchEventResult]
+
 class IssueUpdate(BaseModel):
     status: IssueStatus
     resolution_note: str = ""
