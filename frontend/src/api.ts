@@ -1,0 +1,1 @@
+export const api=async(path:string, options?:RequestInit)=>{const r=await fetch(`/api${path}`,{...options,headers:{'Content-Type':'application/json',...options?.headers}});if(!r.ok){const x=await r.json().catch(()=>({}));throw new Error(x.detail||`请求失败 (${r.status})`)}return r.json()};
