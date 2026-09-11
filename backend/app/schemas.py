@@ -29,11 +29,17 @@ class CrateUpdate(BaseModel):
     notes: Optional[str] = None
     active: Optional[bool] = None
 
+class BackupCodeBind(BaseModel):
+    # 备用编号与主编号同一格式约束；绑定时校验在主、备编号全集中唯一
+    backup_code: CrateCode
+
 class CrateOut(CrateBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     active: bool
     isolated: bool
+    # 可空备用编号：仅追加字段，未绑定的箱体为空
+    backup_code: Optional[str] = None
     last_inspected_at: Optional[datetime]
     created_at: datetime
 

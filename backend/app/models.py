@@ -9,6 +9,8 @@ class Crate(Base):
     __tablename__ = "crates"
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    # 可选备用编号：破损标签更换后旧箱以新编号流转，登记时与主编号解析为同一箱体；旧库经增量迁移补齐，历史数据为空
+    backup_code: Mapped[Optional[str]] = mapped_column(String(50), unique=True, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(100))
     location: Mapped[str] = mapped_column(String(100))
     cleaning_status: Mapped[str] = mapped_column(String(20), default="dirty")

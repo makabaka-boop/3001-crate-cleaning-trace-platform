@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
-from .schemas import (EVENT_NO_MAX_LENGTH, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
+from .schemas import (EVENT_NO_MAX_LENGTH, BackupCodeBind, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
                       EventCreate, EventOut, InspectionPlanItem, InspectionPlanOut, IssueOut, IssueUpdate)
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
@@ -23,7 +23,7 @@ RECTIFICATION_EVENT_TYPES = {
 }
 
 def ensure_schema():
-    """建表并对旧库做增量迁移：补齐新增可空关联列，历史问题数据保留且关联为空。"""
+    """建表并对旧库做增量迁移：补齐新增可空列，历史数据保留且新增字段为空。"""
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
     if "issues" in inspector.get_table_names():
@@ -31,6 +31,11 @@ def ensure_schema():
         if "rectification_event_id" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE issues ADD COLUMN rectification_event_id INTEGER"))
+    if "crates" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("crates")}
+        if "backup_code" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE crates ADD COLUMN backup_code VARCHAR(50)"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,6 +48,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/api/health")
 def health(): return {"status": "ok"}
 
+def resolve_crate(db, code):
+    """主编号或备用编号解析为同一箱体。绑定与新增箱体时保证编号在主、备全集中唯一，因此至多命中一条。"""
+    return db.scalar(select(Crate).where((Crate.code == code) | (Crate.backup_code == code)))
+
+def occupied_409(code):
+    return HTTPException(409, f"编号已被占用: {code}")
+
 @app.get("/api/crates", response_model=list[CrateOut])
 def list_crates(code: Optional[str] = None, location: Optional[str] = None, cleaning_status: Optional[str] = None, active: Optional[bool] = None, db: Session = Depends(get_db)):
     q = select(Crate).order_by(Crate.code)
@@ -54,6 +66,9 @@ def list_crates(code: Optional[str] = None, location: Optional[str] = None, clea
 
 @app.post("/api/crates", response_model=CrateOut, status_code=201)
 def create_crate(data: CrateCreate, db: Session = Depends(get_db)):
+    # 新箱主编号不得撞上已绑定的备用编号，否则登记解析会产生歧义
+    if db.scalar(select(Crate).where(Crate.backup_code == data.code)):
+        raise occupied_409(data.code)
     crate = Crate(**data.model_dump())
     db.add(crate)
     try: db.commit()
@@ -73,6 +88,22 @@ def deactivate_crate(crate_id: int, db: Session = Depends(get_db)):
     crate = db.get(Crate, crate_id)
     if not crate: raise HTTPException(404, "周转箱不存在")
     crate.active = False; db.commit(); db.refresh(crate); return crate
+
+@app.post("/api/crates/{crate_id}/backup-code", response_model=CrateOut)
+def bind_backup_code(crate_id: int, data: BackupCodeBind, db: Session = Depends(get_db)):
+    """为箱体绑定可选备用编号；编号在主、备编号全集中必须唯一，冲突返回占用提示。"""
+    crate = db.get(Crate, crate_id)
+    if not crate: raise HTTPException(404, "周转箱不存在")
+    code = data.backup_code
+    owner = resolve_crate(db, code)
+    if owner and (owner.id != crate.id or crate.code == code):
+        raise occupied_409(code)
+    crate.backup_code = code
+    try: db.commit()
+    except IntegrityError:
+        # 并发绑定同一备用编号：唯一约束兜底，后提交方收到占用提示
+        db.rollback(); raise occupied_409(code)
+    db.refresh(crate); return crate
 
 def add_issue(db, crate, event, issue_type, reason):
     db.add(Issue(crate_id=crate.id, event_id=event.id, issue_type=issue_type, occurred_at=event.occurred_at, reason=reason))
@@ -98,7 +129,7 @@ def apply_event(db, crate, event):
 
 @app.post("/api/events", response_model=EventOut, status_code=201)
 def create_event(data: EventCreate, db: Session = Depends(get_db)):
-    crate = db.scalar(select(Crate).where(Crate.code == data.crate_code))
+    crate = resolve_crate(db, data.crate_code)
     if not crate: raise HTTPException(404, "周转箱编号不存在")
     if not crate.active: raise HTTPException(409, "已停用周转箱不能登记事件")
     issue = None
@@ -123,18 +154,19 @@ def create_event(data: EventCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/events/batch", response_model=EventBatchOut, status_code=201)
 def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
-    seen: set[str] = set()
+    # 主编号与备用编号都解析到同一箱体；按解析后的箱体去重，同一箱体不得以两个编号进入同一批次
+    crates: list[Crate] = []
+    seen: dict[int, str] = {}
     for code in data.crate_codes:
-        if code in seen:
-            raise HTTPException(409, f"批次内周转箱编号重复: {code}")
-        seen.add(code)
-    crates: dict[str, Crate] = {}
-    for code in data.crate_codes:
-        crate = db.scalar(select(Crate).where(Crate.code == code))
+        crate = resolve_crate(db, code)
         if not crate: raise HTTPException(404, f"周转箱编号不存在: {code}")
-        if not crate.active: raise HTTPException(409, f"周转箱已停用，不能登记事件: {code}")
-        crates[code] = crate
-    event_nos = [f"{data.batch_no}-{code}" for code in data.crate_codes]
+        if crate.id in seen:
+            raise HTTPException(409, f"批次内周转箱编号重复: {crate.code}（{seen[crate.id]} 与 {code} 解析为同一箱体）")
+        seen[crate.id] = code
+        if not crate.active: raise HTTPException(409, f"周转箱已停用，不能登记事件: {crate.code}")
+        crates.append(crate)
+    # 事件编号按“批次编号-主编号”生成，响应与列表始终返回主编号
+    event_nos = [f"{data.batch_no}-{crate.code}" for crate in crates]
     for no in event_nos:
         if len(no) > EVENT_NO_MAX_LENGTH: raise HTTPException(422, f"事件编号超长（批次编号+连接符+箱号不超过{EVENT_NO_MAX_LENGTH}字符）: {no}")
     existing = set(db.scalars(select(Event.event_no).where(Event.event_no.in_(event_nos))).all())
@@ -142,13 +174,12 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
         raise conflict_409(data.batch_no, sorted(existing)[0])
     results = []
     try:
-        for code, event_no in zip(data.crate_codes, event_nos):
-            crate = crates[code]
+        for crate, event_no in zip(crates, event_nos):
             event = Event(event_no=event_no, crate_id=crate.id, event_type=data.event_type,
                           occurred_at=data.occurred_at, operator=data.operator, description=data.description)
             db.add(event); db.flush()
             apply_event(db, crate, event)
-            results.append(BatchEventResult(crate_code=code, event_no=event_no, event=EventOut.model_validate(event)))
+            results.append(BatchEventResult(crate_code=crate.code, event_no=event_no, event=EventOut.model_validate(event)))
         db.commit()
     except (IntegrityError, OperationalError) as exc:
         # 同一批次被并发提交：预检通过后对方抢先落库。整批回滚并指出具体冲突箱号
