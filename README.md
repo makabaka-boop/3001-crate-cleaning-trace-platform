@@ -56,7 +56,7 @@ cd frontend && npm test && npm run build
 ## API 摘要
 
 - `GET/POST /api/crates`；`PUT /api/crates/{id}`；`POST /api/crates/{id}/deactivate`；`POST /api/crates/{id}/backup-code`（绑定备用编号，响应追加可空 `backup_code`；新箱主编号与已绑定备用编号冲突返回 409 占用提示）
-- `GET/POST /api/events`（单笔登记，事件体可选 `issue_id`：校验问题存在、已确认、与箱号同箱体且事件类型符合整改建议，通过则单事务关联整改事件并关闭该问题，否则 404/409 拒绝且事件与问题均不变）；`POST /api/events/batch`（批量登记，事件编号为“批次编号-箱号”，整批单事务校验，任一失败全部回滚）
+- `GET/POST /api/events`（单笔登记，事件体可选 `issue_id`：校验问题存在、已确认、与箱号同箱体且事件类型符合整改建议，通过则单事务关联整改事件并关闭该问题，否则 404/409 拒绝且事件与问题均不变；事件响应与列表均返回箱体主编号 `crate_code`，备用编号登记的事件同样归入主编号）；`POST /api/events/batch`（批量登记，事件编号为“批次编号-主编号”，整批单事务校验，任一失败全部回滚）
 - `GET /api/issues`（响应仅追加可空字段 `rectification_event_no`）；`PATCH /api/issues/{id}`
 - `GET /api/inspection-plan?base_date=YYYY-MM-DD&days_ahead=N`（只读检查计划：按配置的有效天数计算到期日、剩余天数与分类，停用箱不进入，非法参数返回 422）
 - `GET /api/dashboard`；`GET /api/health`

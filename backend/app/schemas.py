@@ -58,6 +58,8 @@ class EventOut(BaseModel):
     id: int
     event_no: str
     crate_id: int
+    # 箱体主编号：备用编号登记的事件同样返回主编号
+    crate_code: str
     event_type: EventType
     occurred_at: datetime
     operator: str

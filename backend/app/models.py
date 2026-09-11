@@ -32,6 +32,11 @@ class Event(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     crate: Mapped[Crate] = relationship(back_populates="events")
 
+    @property
+    def crate_code(self) -> str:
+        """事件归属箱体的主编号：事件响应与列表始终展示主编号，备用编号仅用于登记时解析。"""
+        return self.crate.code
+
 class Issue(Base):
     __tablename__ = "issues"
     id: Mapped[int] = mapped_column(primary_key=True)

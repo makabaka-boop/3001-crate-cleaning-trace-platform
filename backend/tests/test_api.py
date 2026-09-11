@@ -33,7 +33,9 @@ def test_crate_crud_and_validation(client):
 def test_event_issues_and_duplicate(client):
     crate(client)
     payload={"event_no":"EV-1","crate_code":"BX-TEST","event_type":"issue","occurred_at":datetime.utcnow().isoformat(),"operator":"王工","description":"领用"}
-    assert client.post("/api/events", json=payload).status_code == 201
+    r = client.post("/api/events", json=payload)
+    assert r.status_code == 201 and r.json()["crate_code"] == "BX-TEST"
+    assert client.get("/api/events").json()[0]["crate_code"] == "BX-TEST"
     issues=client.get("/api/issues").json()
     assert {x["issue_type"] for x in issues} == {"reuse_without_wash", "expired_inspection"}
     assert client.post("/api/events", json=payload).status_code == 409

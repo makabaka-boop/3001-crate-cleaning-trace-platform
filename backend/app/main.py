@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
 from .schemas import (EVENT_NO_MAX_LENGTH, BackupCodeBind, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
@@ -140,7 +140,7 @@ def create_event(data: EventCreate, db: Session = Depends(get_db)):
         if issue.crate_id != crate.id: raise HTTPException(409, "整改事件的周转箱与问题所属箱体不一致")
         expected = RECTIFICATION_EVENT_TYPES.get(issue.issue_type)
         if expected != data.event_type: raise HTTPException(409, "事件类型与该问题的整改建议不符")
-    event = Event(crate_id=crate.id, **data.model_dump(exclude={"crate_code", "issue_id"}))
+    event = Event(crate=crate, **data.model_dump(exclude={"crate_code", "issue_id"}))
     db.add(event)
     try: db.flush()
     except IntegrityError:
@@ -175,7 +175,7 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
     results = []
     try:
         for crate, event_no in zip(crates, event_nos):
-            event = Event(event_no=event_no, crate_id=crate.id, event_type=data.event_type,
+            event = Event(event_no=event_no, crate=crate, event_type=data.event_type,
                           occurred_at=data.occurred_at, operator=data.operator, description=data.description)
             db.add(event); db.flush()
             apply_event(db, crate, event)
@@ -194,7 +194,7 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
 
 @app.get("/api/events", response_model=list[EventOut])
 def list_events(crate_code: Optional[str] = None, event_type: Optional[str] = None, db: Session = Depends(get_db)):
-    q = select(Event).join(Crate).order_by(Event.occurred_at.desc())
+    q = select(Event).join(Crate).options(selectinload(Event.crate)).order_by(Event.occurred_at.desc())
     if crate_code: q = q.where(Crate.code.contains(crate_code))
     if event_type: q = q.where(Event.event_type == event_type)
     return db.scalars(q).all()

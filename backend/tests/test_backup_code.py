@@ -98,12 +98,13 @@ def test_register_wash_with_backup_code_updates_original_crate(client):
     r = event(client, "EV-W1", "BX-1-NEW", "wash")
     assert r.status_code == 201
     assert r.json()["crate_id"] == c["id"]                      # 事件落在原箱体
+    assert r.json()["crate_code"] == "BX-1"                     # 事件响应返回箱体主编号
     box = crates_by_code(client)["BX-1"]
     assert box["cleaning_status"] == "clean" and box["location"] == "清洗区"
     # 事件列表仍按主编号检索与返回
     events = client.get("/api/events?crate_code=BX-1").json()
     assert [e["event_no"] for e in events] == ["EV-W1"]
-    assert events[0]["crate_id"] == c["id"]
+    assert events[0]["crate_id"] == c["id"] and events[0]["crate_code"] == "BX-1"
 
 def test_risk_identification_with_backup_code_lands_on_original_crate(client):
     c = crate(client, "BX-1", "dirty")                          # 未清洗且从未检查
@@ -131,9 +132,12 @@ def test_batch_with_backup_code_returns_primary_and_updates_crate(client):
     # 响应与事件编号均使用主编号，顺序与提交一致
     assert [x["crate_code"] for x in body["results"]] == ["BX-1", "BX-2"]
     assert [x["event_no"] for x in body["results"]] == ["PCH-B1-BX-1", "PCH-B1-BX-2"]
+    assert [x["event"]["crate_code"] for x in body["results"]] == ["BX-1", "BX-2"]
     crates = crates_by_code(client)
     assert all(c["cleaning_status"] == "clean" and c["location"] == "清洗区" for c in crates.values())
-    assert len(client.get("/api/events").json()) == 2
+    events = client.get("/api/events").json()
+    assert len(events) == 2
+    assert {e["crate_code"] for e in events} == {"BX-1", "BX-2"}   # 记录列表展示主编号
 
 def test_batch_mixed_primary_and_backup_same_crate_rolls_back(client):
     c1 = crate(client, "BX-1", "dirty"); crate(client, "BX-2", "dirty")
@@ -162,7 +166,7 @@ def test_primary_code_single_and_batch_registration_unchanged(client):
     c1 = crate(client, "BX-1", "dirty"); crate(client, "BX-2", "dirty")
     assert bind(client, c1["id"], "BX-1-NEW").status_code == 200   # 绑定备用编号不影响主编号链路
     r = event(client, "EV-P1", "BX-1", "wash")
-    assert r.status_code == 201 and r.json()["crate_id"] == c1["id"]
+    assert r.status_code == 201 and r.json()["crate_id"] == c1["id"] and r.json()["crate_code"] == "BX-1"
     assert crates_by_code(client)["BX-1"]["cleaning_status"] == "clean"
     r = batch(client, ["BX-1", "BX-2"], batch_no="PCH-P1")
     assert r.status_code == 201
