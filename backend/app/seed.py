@@ -11,6 +11,7 @@ def seed():
         Crate(code="BX-001", name="蓝色食品箱", location="成品仓", cleaning_status="clean", last_inspected_at=now-timedelta(days=5)),
         Crate(code="BX-002", name="原料周转箱", location="待清洗区", cleaning_status="dirty", last_inspected_at=now-timedelta(days=45)),
         Crate(code="BX-003", name="红色隔离箱", location="隔离区", cleaning_status="clean", isolated=True, last_inspected_at=now-timedelta(days=2)),
+        Crate(code="BX-004", name="备用周转箱", location="仓库", cleaning_status="unknown"),
     ]
     db.add_all(crates); db.flush()
     events = [

@@ -1,11 +1,13 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 CleaningStatus = Literal["clean", "dirty", "unknown"]
 EventType = Literal["inbound", "issue", "return", "wash", "inspect", "isolate"]
 IssueStatus = Literal["pending", "confirmed", "false_positive", "closed"]
+# 计划分类：从未检查优先，其次已过期，最后即将到期
+PlanCategory = Literal["never_inspected", "overdue", "due_soon"]
 
 # 周转箱编号格式：与 CrateBase.code 一致，批量登记时逐箱校验
 CrateCode = Annotated[str, Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")]
@@ -91,3 +93,20 @@ class DashboardOut(BaseModel):
     clean_crates: int
     pending_issues: int
     isolated_crates: int
+
+class InspectionPlanItem(BaseModel):
+    crate_id: int
+    code: str
+    name: str
+    location: str
+    last_inspected_at: Optional[datetime]
+    due_date: Optional[date]        # 从未检查的箱无到期日
+    days_remaining: Optional[int]   # 负数表示已超期
+    category: PlanCategory
+
+class InspectionPlanOut(BaseModel):
+    base_date: date
+    days_ahead: int
+    valid_days: int
+    total: int
+    items: list[InspectionPlanItem]

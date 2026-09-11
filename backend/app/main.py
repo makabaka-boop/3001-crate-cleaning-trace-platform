@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import Crate, Event, Issue
 from .schemas import (EVENT_NO_MAX_LENGTH, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
-                      EventCreate, EventOut, IssueOut, IssueUpdate)
+                      EventCreate, EventOut, InspectionPlanItem, InspectionPlanOut, IssueOut, IssueUpdate)
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
 
@@ -138,6 +138,29 @@ def list_events(crate_code: Optional[str] = None, event_type: Optional[str] = No
     if crate_code: q = q.where(Crate.code.contains(crate_code))
     if event_type: q = q.where(Event.event_type == event_type)
     return db.scalars(q).all()
+
+# 同类内的稳定排序：先到期日（从未检查无到期日，仅按箱号），再箱号
+PLAN_CATEGORY_ORDER = {"never_inspected": 0, "overdue": 1, "due_soon": 2}
+
+@app.get("/api/inspection-plan", response_model=InspectionPlanOut)
+def inspection_plan(base_date: Optional[date] = None, days_ahead: int = Query(7, ge=0, le=365), db: Session = Depends(get_db)):
+    """只读检查计划：按基准日期与配置的有效天数计算到期日、剩余天数与分类，不写回箱体状态。"""
+    base = base_date or date.today()
+    items = []
+    for c in db.scalars(select(Crate).where(Crate.active == True)).all():  # 停用箱不进入计划
+        if c.last_inspected_at is None:
+            items.append(InspectionPlanItem(crate_id=c.id, code=c.code, name=c.name, location=c.location,
+                                            last_inspected_at=None, due_date=None, days_remaining=None, category="never_inspected"))
+            continue
+        due = (c.last_inspected_at + timedelta(days=INSPECTION_VALID_DAYS)).date()
+        remaining = (due - base).days
+        if remaining < 0: category = "overdue"
+        elif remaining <= days_ahead: category = "due_soon"
+        else: continue  # 到期日超出未来窗口，暂不进入计划
+        items.append(InspectionPlanItem(crate_id=c.id, code=c.code, name=c.name, location=c.location,
+                                        last_inspected_at=c.last_inspected_at, due_date=due, days_remaining=remaining, category=category))
+    items.sort(key=lambda x: (PLAN_CATEGORY_ORDER[x.category], x.due_date or date.min, x.code))
+    return InspectionPlanOut(base_date=base, days_ahead=days_ahead, valid_days=INSPECTION_VALID_DAYS, total=len(items), items=items)
 
 def issue_dict(i):
     return {"id": i.id, "crate_id": i.crate_id, "crate_code": i.crate.code, "crate_name": i.crate.name, "issue_type": i.issue_type, "occurred_at": i.occurred_at, "reason": i.reason, "status": i.status, "resolution_note": i.resolution_note}

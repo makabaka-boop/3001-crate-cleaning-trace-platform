@@ -8,3 +8,12 @@
 .chip{background:#edf3f0;color:#173a2c;border-radius:16px;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;font-size:13px}
 .chip button{border:0;background:none;color:#a44427;cursor:pointer;font-size:14px;padding:0}
 .warn{grid-column:span 2;color:#b64d32;background:#f9ece7;border-radius:8px;padding:10px;margin:0;font-size:13px}
+.hero-cta{display:inline-block;margin-top:18px;background:#efb947;color:#173a2c;border:0;border-radius:8px;padding:11px 22px;font-weight:700;cursor:pointer;font:inherit}
+.plan-filters label{max-width:200px}
+.plan-filters button{align-self:flex-end;border:1px solid #1c684a;background:#1c684a;color:white;border-radius:8px;padding:10px 22px;cursor:pointer;font:inherit}
+.plan-filters button:disabled{opacity:.6;cursor:default}
+.plan-err{margin:14px 0 0}
+em.never_inspected{color:#8a6d1f;font-style:normal;font-weight:700}
+em.overdue{color:#b64d32;font-style:normal;font-weight:700}
+em.due_soon{color:#28624b;font-style:normal;font-weight:700}
+.plan-btn{border:1px solid #cfe0d8;background:#edf3f0;color:#28624b;border-radius:7px;padding:6px 12px;cursor:pointer;font:inherit;white-space:nowrap}

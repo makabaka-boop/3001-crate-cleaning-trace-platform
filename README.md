@@ -10,8 +10,9 @@
 - 状态推导：事件登记后更新位置、清洁状态、隔离状态及最近检查时间。
 - 风险识别：未清洗再次领用、已隔离仍领用、检查超过 30 天有效期仍使用。
 - 问题闭环：待处理、已确认、误报、已关闭，支持处理说明。
+- 检查计划：按基准日期与未来天数生成在用箱体的复检计划，从未检查、已过期、即将到期分组排序；一键预填登记检查单，提交后自动退出计划。
 - 首页指标及编号、位置、清洁状态、问题状态筛选；完整加载、成功和失败反馈；响应式窄屏布局。
-- 首次容器启动自动装入 3 个周转箱及流转/风险示例数据。
+- 首次容器启动自动装入 4 个周转箱及流转/风险示例数据。
 
 ## 一键启动
 
@@ -56,6 +57,7 @@ cd frontend && npm test && npm run build
 - `GET/POST /api/crates`；`PUT /api/crates/{id}`；`POST /api/crates/{id}/deactivate`
 - `GET/POST /api/events`；`POST /api/events/batch`（批量登记，事件编号为“批次编号-箱号”，整批单事务校验，任一失败全部回滚）
 - `GET /api/issues`；`PATCH /api/issues/{id}`
+- `GET /api/inspection-plan?base_date=YYYY-MM-DD&days_ahead=N`（只读检查计划：按配置的有效天数计算到期日、剩余天数与分类，停用箱不进入，非法参数返回 422）
 - `GET /api/dashboard`；`GET /api/health`
 
 参数校验失败返回 422，非法箱号返回 404，重复箱号/事件编号与停用箱登记返回 409。
