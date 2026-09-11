@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
@@ -15,9 +15,26 @@ from .schemas import (EVENT_NO_MAX_LENGTH, BatchEventResult, CrateCreate, CrateO
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
 
+# 已确认问题的整改建议事件类型：未清洗领用建议清洗；检查过期或隔离领用建议检查
+RECTIFICATION_EVENT_TYPES = {
+    "reuse_without_wash": "wash",
+    "expired_inspection": "inspect",
+    "use_while_isolated": "inspect",
+}
+
+def ensure_schema():
+    """建表并对旧库做增量迁移：补齐新增可空关联列，历史问题数据保留且关联为空。"""
+    Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+    if "issues" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("issues")}
+        if "rectification_event_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE issues ADD COLUMN rectification_event_id INTEGER"))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
+    ensure_schema()
     yield
 
 app = FastAPI(title="周转箱清洁追溯平台 API", version="1.0.0", lifespan=lifespan)
@@ -84,12 +101,24 @@ def create_event(data: EventCreate, db: Session = Depends(get_db)):
     crate = db.scalar(select(Crate).where(Crate.code == data.crate_code))
     if not crate: raise HTTPException(404, "周转箱编号不存在")
     if not crate.active: raise HTTPException(409, "已停用周转箱不能登记事件")
-    event = Event(crate_id=crate.id, **data.model_dump(exclude={"crate_code"}))
+    issue = None
+    if data.issue_id is not None:
+        issue = db.get(Issue, data.issue_id)
+        if not issue: raise HTTPException(404, "问题不存在")
+        if issue.status != "confirmed": raise HTTPException(409, "问题尚未确认，不能登记整改")
+        if issue.crate_id != crate.id: raise HTTPException(409, "整改事件的周转箱与问题所属箱体不一致")
+        expected = RECTIFICATION_EVENT_TYPES.get(issue.issue_type)
+        if expected != data.event_type: raise HTTPException(409, "事件类型与该问题的整改建议不符")
+    event = Event(crate_id=crate.id, **data.model_dump(exclude={"crate_code", "issue_id"}))
     db.add(event)
     try: db.flush()
     except IntegrityError:
         db.rollback(); raise HTTPException(409, "事件编号已存在")
     apply_event(db, crate, event)
+    if issue is not None:
+        # 与状态推导、事件落库同一事务：关联整改事件并关闭原问题
+        issue.rectification_event_id = event.id
+        issue.status = "closed"
     db.commit(); db.refresh(event); return event
 
 @app.post("/api/events/batch", response_model=EventBatchOut, status_code=201)
@@ -163,7 +192,7 @@ def inspection_plan(base_date: Optional[date] = None, days_ahead: int = Query(7,
     return InspectionPlanOut(base_date=base, days_ahead=days_ahead, valid_days=INSPECTION_VALID_DAYS, total=len(items), items=items)
 
 def issue_dict(i):
-    return {"id": i.id, "crate_id": i.crate_id, "crate_code": i.crate.code, "crate_name": i.crate.name, "issue_type": i.issue_type, "occurred_at": i.occurred_at, "reason": i.reason, "status": i.status, "resolution_note": i.resolution_note}
+    return {"id": i.id, "crate_id": i.crate_id, "crate_code": i.crate.code, "crate_name": i.crate.name, "issue_type": i.issue_type, "occurred_at": i.occurred_at, "reason": i.reason, "status": i.status, "resolution_note": i.resolution_note, "rectification_event_no": i.rectification_event.event_no if i.rectification_event_id else None}
 
 @app.get("/api/issues", response_model=list[IssueOut])
 def list_issues(crate_code: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):

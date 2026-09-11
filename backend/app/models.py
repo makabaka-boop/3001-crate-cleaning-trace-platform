@@ -40,4 +40,7 @@ class Issue(Base):
     reason: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     resolution_note: Mapped[str] = mapped_column(Text, default="")
+    # 整改事件：登记整改的事务内关联，旧库通过增量迁移补齐，历史数据为空
+    rectification_event_id: Mapped[Optional[int]] = mapped_column(ForeignKey("events.id"), nullable=True, index=True)
     crate: Mapped[Crate] = relationship()
+    rectification_event: Mapped[Optional[Event]] = relationship(foreign_keys=[rectification_event_id])

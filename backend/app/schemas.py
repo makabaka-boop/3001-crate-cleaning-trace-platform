@@ -44,6 +44,8 @@ class EventCreate(BaseModel):
     occurred_at: datetime
     operator: str = Field(min_length=1, max_length=80)
     description: str = ""
+    # 可选：在已确认问题上“登记整改”时带上，后端校验同箱体且事件类型符合整改建议，提交后关闭该问题
+    issue_id: Optional[int] = None
 
 class EventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -86,6 +88,8 @@ class IssueOut(BaseModel):
     reason: str
     status: IssueStatus
     resolution_note: str
+    # 可空整改事件编号：仅追加字段，旧问题无整改关联时为空
+    rectification_event_no: Optional[str] = None
 
 class DashboardOut(BaseModel):
     total_crates: int
