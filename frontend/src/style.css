@@ -19,3 +19,12 @@ em.due_soon{color:#28624b;font-style:normal;font-weight:700}
 .plan-btn{border:1px solid #cfe0d8;background:#edf3f0;color:#28624b;border-radius:7px;padding:6px 12px;cursor:pointer;font:inherit;white-space:nowrap}
 td .plan-btn{margin-top:6px}
 small.linked{color:#28624b}
+.inv-filters label{max-width:240px}
+.inv-filters button{align-self:flex-end;border:1px solid #1c684a;background:#1c684a;color:white;border-radius:8px;padding:10px 22px;cursor:pointer;font:inherit}
+.inv-filters button:disabled{opacity:.6;cursor:default}
+.inv-expected{margin-bottom:14px}
+.inv-result{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.inv-result section{border:1px solid #e1e9e5;border-radius:12px;padding:14px}
+.inv-result h3{margin:0 0 10px;font-size:14px;color:#53645d}
+.inv-result .empty{padding:6px 0}
+@media(max-width:720px){.inv-result{grid-template-columns:1fr 1fr}}

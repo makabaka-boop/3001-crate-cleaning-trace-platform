@@ -37,6 +37,29 @@ class Event(Base):
         """事件归属箱体的主编号：事件响应与列表始终展示主编号，备用编号仅用于登记时解析。"""
         return self.crate.code
 
+class InventoryCheck(Base):
+    __tablename__ = "inventory_checks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    location: Mapped[str] = mapped_column(String(100))
+    # in_progress → completed：完成时快照与差异结果在同一事务内固化，之后的箱体位置变更不改写历史结论
+    status: Mapped[str] = mapped_column(String(20), default="in_progress")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    items: Mapped[list["InventoryCheckItem"]] = relationship(back_populates="check", cascade="all, delete-orphan")
+
+class InventoryCheckItem(Base):
+    __tablename__ = "inventory_check_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    check_id: Mapped[int] = mapped_column(ForeignKey("inventory_checks.id"), index=True)
+    crate_id: Mapped[int] = mapped_column(ForeignKey("crates.id"), index=True)
+    # 主编号与位置快照：应在/缺失行取创建时库位，错放行取完成时该箱登记位置
+    crate_code: Mapped[str] = mapped_column(String(50))
+    location: Mapped[str] = mapped_column(String(100))
+    # 完成时固化：matched / missing / misplaced；进行中为空
+    result: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    check: Mapped[InventoryCheck] = relationship(back_populates="items")
+    crate: Mapped[Crate] = relationship()
+
 class Issue(Base):
     __tablename__ = "issues"
     id: Mapped[int] = mapped_column(primary_key=True)

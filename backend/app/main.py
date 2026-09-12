@@ -5,13 +5,13 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, selectinload
 from .database import Base, engine, get_db
-from .models import Crate, Event, Issue
-from .schemas import (EVENT_NO_MAX_LENGTH, BackupCodeBind, BatchEventResult, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
-                      EventCreate, EventOut, InspectionPlanItem, InspectionPlanOut, IssueOut, IssueUpdate)
+from .models import Crate, Event, InventoryCheck, InventoryCheckItem, Issue
+from .schemas import (EVENT_NO_MAX_LENGTH, BackupCodeBind, BatchEventResult, CheckStatus, CrateCreate, CrateOut, CrateUpdate, DashboardOut, EventBatchCreate, EventBatchOut,
+                      EventCreate, EventOut, InspectionPlanItem, InspectionPlanOut, InventoryCheckComplete, InventoryCheckCreate, InventoryCheckOut, IssueOut, IssueUpdate)
 
 INSPECTION_VALID_DAYS = int(os.getenv("INSPECTION_VALID_DAYS", "30"))
 
@@ -240,6 +240,77 @@ def update_issue(issue_id: int, data: IssueUpdate, db: Session = Depends(get_db)
     if not issue: raise HTTPException(404, "问题不存在")
     issue.status = data.status; issue.resolution_note = data.resolution_note
     db.commit(); db.refresh(issue); return issue_dict(issue)
+
+# ---------- 库位盘点 ----------
+
+def check_dict(c):
+    """盘点单响应：应在取创建时快照，实扫/缺失/错放取完成时固化的结果；进行中仅应在可查。"""
+    expected, scanned, missing, misplaced = [], [], [], []
+    for i in c.items:
+        if i.result in (None, "matched", "missing"): expected.append(i.crate_code)
+        if i.result in ("matched", "misplaced"): scanned.append(i.crate_code)
+        if i.result == "missing": missing.append(i.crate_code)
+        if i.result == "misplaced": misplaced.append({"crate_code": i.crate_code, "location": i.location})
+    return {"id": c.id, "location": c.location, "status": c.status, "created_at": c.created_at, "completed_at": c.completed_at,
+            "expected": sorted(expected), "scanned": sorted(scanned), "missing": sorted(missing),
+            "misplaced": sorted(misplaced, key=lambda x: x["crate_code"])}
+
+@app.post("/api/inventory-checks", response_model=InventoryCheckOut, status_code=201)
+def create_inventory_check(data: InventoryCheckCreate, db: Session = Depends(get_db)):
+    """创建盘点单：以创建时的在用箱体快照作为核对基准，之后的箱体位置变更不改写本单结论。"""
+    crates = db.scalars(select(Crate).where(Crate.active == True, Crate.location == data.location).order_by(Crate.code)).all()
+    if not crates: raise HTTPException(404, f"库位无在用周转箱，无法创建盘点: {data.location}")
+    check = InventoryCheck(location=data.location)
+    db.add(check); db.flush()
+    for c in crates:
+        db.add(InventoryCheckItem(check_id=check.id, crate_id=c.id, crate_code=c.code, location=c.location))
+    db.commit(); db.refresh(check); return check_dict(check)
+
+@app.get("/api/inventory-checks", response_model=list[InventoryCheckOut])
+def list_inventory_checks(status: Optional[CheckStatus] = None, db: Session = Depends(get_db)):
+    """盘点记录：已完成的盘点保留完整差异结果，供当次结果复看。"""
+    q = select(InventoryCheck).options(selectinload(InventoryCheck.items)).order_by(InventoryCheck.id.desc())
+    if status: q = q.where(InventoryCheck.status == status)
+    return [check_dict(c) for c in db.scalars(q).all()]
+
+@app.get("/api/inventory-checks/{check_id}", response_model=InventoryCheckOut)
+def get_inventory_check(check_id: int, db: Session = Depends(get_db)):
+    check = db.get(InventoryCheck, check_id)
+    if not check: raise HTTPException(404, "盘点单不存在")
+    return check_dict(check)
+
+@app.post("/api/inventory-checks/{check_id}/complete", response_model=InventoryCheckOut)
+def complete_inventory_check(check_id: int, data: InventoryCheckComplete, db: Session = Depends(get_db)):
+    """完成盘点：统一解析主/备编号、拒绝重复扫描，快照与差异结果在同一事务内固化。"""
+    check = db.get(InventoryCheck, check_id)
+    if not check: raise HTTPException(404, "盘点单不存在")
+    if check.status != "in_progress": raise HTTPException(409, f"盘点单已完成，不能重复完成（库位 {check.location}）")
+    # 主编号或备用编号解析为同一箱体；同一箱体以两个编号混入或重复扫描即拒绝，盘点单保持进行中，可修正后重试
+    crates: list[Crate] = []
+    seen: dict[int, str] = {}
+    for code in data.scanned_codes:
+        crate = resolve_crate(db, code)
+        if not crate: raise HTTPException(404, f"周转箱编号不存在: {code}")
+        if crate.id in seen:
+            raise HTTPException(409, f"盘点扫描编号重复: {crate.code}（{seen[crate.id]} 与 {code} 解析为同一箱体）")
+        seen[crate.id] = code
+        if not crate.active: raise HTTPException(409, f"周转箱已停用，不能计入盘点: {crate.code}")
+        crates.append(crate)
+    scanned_ids = {c.id for c in crates}
+    # 原子占位：并发重复完成时仅一个请求继续，其余收到重复完成反馈
+    updated = db.execute(update(InventoryCheck).where(InventoryCheck.id == check.id, InventoryCheck.status == "in_progress")
+                         .values(status="completed", completed_at=datetime.utcnow())).rowcount
+    if not updated:
+        db.rollback(); raise HTTPException(409, f"盘点单已完成，不能重复完成（库位 {check.location}）")
+    db.refresh(check)
+    for item in check.items:
+        item.result = "matched" if item.crate_id in scanned_ids else "missing"
+    snapshot_ids = {item.crate_id for item in check.items}
+    for crate in crates:
+        if crate.id not in snapshot_ids:
+            db.add(InventoryCheckItem(check_id=check.id, crate_id=crate.id, crate_code=crate.code,
+                                      location=crate.location, result="misplaced"))
+    db.commit(); db.refresh(check); return check_dict(check)
 
 @app.get("/api/dashboard", response_model=DashboardOut)
 def dashboard(db: Session = Depends(get_db)):

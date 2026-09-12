@@ -1,13 +1,15 @@
 from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CleaningStatus = Literal["clean", "dirty", "unknown"]
 EventType = Literal["inbound", "issue", "return", "wash", "inspect", "isolate"]
 IssueStatus = Literal["pending", "confirmed", "false_positive", "closed"]
 # 计划分类：从未检查优先，其次已过期，最后即将到期
 PlanCategory = Literal["never_inspected", "overdue", "due_soon"]
+# 盘点单状态：进行中 → 已完成
+CheckStatus = Literal["in_progress", "completed"]
 
 # 周转箱编号格式：与 CrateBase.code 一致，批量登记时逐箱校验
 CrateCode = Annotated[str, Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")]
@@ -123,3 +125,32 @@ class InspectionPlanOut(BaseModel):
     valid_days: int
     total: int
     items: list[InspectionPlanItem]
+
+class InventoryCheckCreate(BaseModel):
+    location: str = Field(min_length=1, max_length=100)
+
+    @field_validator("location")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        # 与 CrateCode 一致：纯空白库位在校验阶段即被拒绝（422）
+        if not v.strip(): raise ValueError("库位不能为空")
+        return v
+
+class InventoryCheckComplete(BaseModel):
+    # 逐个扫描的主编号或备用编号；完成时统一解析，同一箱体重复出现即拒绝
+    scanned_codes: list[CrateCode] = Field(min_length=1, max_length=500)
+
+class MisplacedItem(BaseModel):
+    crate_code: str
+    location: str   # 完成时该箱的登记位置
+
+class InventoryCheckOut(BaseModel):
+    id: int
+    location: str
+    status: CheckStatus
+    created_at: datetime
+    completed_at: Optional[datetime]
+    expected: list[str]                 # 应在：创建时的在用箱体快照（主编号）
+    scanned: list[str]                  # 实扫：解析后的主编号
+    missing: list[str]                  # 缺失：应在而未扫到
+    misplaced: list[MisplacedItem]      # 错放：扫到但不属于本库位快照
