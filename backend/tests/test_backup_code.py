@@ -121,6 +121,53 @@ def test_single_event_unknown_code_still_404(client):
     assert r.status_code == 404
     assert client.get("/api/events").json() == []
 
+# ---------- 关联筛选：主、备编号命中同一箱体 ----------
+
+def test_crate_list_filter_by_backup_code_returns_primary_crate(client):
+    c1 = crate(client, "BX-1", "clean"); crate(client, "BX-2", "dirty")
+    assert bind(client, c1["id"], "BX-1-NEW").status_code == 200
+    # 按备用编号筛选台账：原箱体不应消失，且返回主编号箱体
+    rows = client.get("/api/crates?code=BX-1-NEW").json()
+    assert [c["code"] for c in rows] == ["BX-1"]
+    assert rows[0]["id"] == c1["id"] and rows[0]["backup_code"] == "BX-1-NEW"
+    # 子串片段命中备用编号同样返回
+    assert [c["code"] for c in client.get("/api/crates?code=NEW").json()] == ["BX-1"]
+    # 无关编号不命中
+    assert client.get("/api/crates?code=BX-2").json() and not client.get("/api/crates?code=BX-NOPE").json()
+
+def test_event_list_filter_by_backup_code_returns_records_under_primary(client):
+    c = crate(client, "BX-1", "dirty")
+    assert bind(client, c["id"], "BX-1-NEW").status_code == 200
+    assert event(client, "EV-W1", "BX-1-NEW", "wash").status_code == 201
+    # 用备用编号登记后按同一编号查询：返回归入主编号的登记记录
+    events = client.get("/api/events?crate_code=BX-1-NEW").json()
+    assert [e["event_no"] for e in events] == ["EV-W1"]
+    assert events[0]["crate_id"] == c["id"] and events[0]["crate_code"] == "BX-1"
+
+def test_issue_list_filter_by_backup_code_returns_original_crate_issues(client):
+    c = crate(client, "BX-1", "dirty")
+    assert bind(client, c["id"], "BX-1-NEW").status_code == 200
+    assert event(client, "EV-U1", "BX-1-NEW", "issue").status_code == 201
+    # 备用编号领用产生风险后按备用编号筛选：展示原箱体名下的风险记录
+    issues = client.get("/api/issues?crate_code=BX-1-NEW").json()
+    assert {i["issue_type"] for i in issues} == {"reuse_without_wash", "expired_inspection"}
+    assert all(i["crate_code"] == "BX-1" and i["crate_id"] == c["id"] for i in issues)
+    # 按主编号仍可检索，两种入口结果一致
+    assert {i["id"] for i in client.get("/api/issues?crate_code=BX-1").json()} == {i["id"] for i in issues}
+
+def test_single_event_invalid_crate_code_rejected_at_validation(client):
+    crate(client, "BX-1")
+    before = client.get("/api/crates").json()
+    long_code = "BX-" + "1" * 48              # 51 字符，超过 50 上限
+    for bad in ("BX 1", "  BX-1  ", "编号\t带空格", long_code):
+        r = event(client, "EV-BAD", bad, "wash")
+        assert r.status_code == 422, bad
+    # 校验阶段拒绝：无任何事件落库，箱体状态不变
+    assert client.get("/api/events").json() == []
+    assert client.get("/api/crates").json() == before
+    # 合法格式但未知的编号仍按未知箱体 404 处理，与批量链路一致
+    assert event(client, "EV-X", "BX-NONE", "wash").status_code == 404
+
 # ---------- 批量登记 ----------
 
 def test_batch_with_backup_code_returns_primary_and_updates_crate(client):

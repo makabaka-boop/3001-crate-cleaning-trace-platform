@@ -58,7 +58,7 @@ def occupied_409(code):
 @app.get("/api/crates", response_model=list[CrateOut])
 def list_crates(code: Optional[str] = None, location: Optional[str] = None, cleaning_status: Optional[str] = None, active: Optional[bool] = None, db: Session = Depends(get_db)):
     q = select(Crate).order_by(Crate.code)
-    if code: q = q.where(Crate.code.contains(code))
+    if code: q = q.where(Crate.code.contains(code) | Crate.backup_code.contains(code))
     if location: q = q.where(Crate.location.contains(location))
     if cleaning_status: q = q.where(Crate.cleaning_status == cleaning_status)
     if active is not None: q = q.where(Crate.active == active)
@@ -195,7 +195,8 @@ def create_events_batch(data: EventBatchCreate, db: Session = Depends(get_db)):
 @app.get("/api/events", response_model=list[EventOut])
 def list_events(crate_code: Optional[str] = None, event_type: Optional[str] = None, db: Session = Depends(get_db)):
     q = select(Event).join(Crate).options(selectinload(Event.crate)).order_by(Event.occurred_at.desc())
-    if crate_code: q = q.where(Crate.code.contains(crate_code))
+    # 主编号或已绑定备用编号命中同一箱体即返回，记录仍以主编号展示
+    if crate_code: q = q.where(Crate.code.contains(crate_code) | Crate.backup_code.contains(crate_code))
     if event_type: q = q.where(Event.event_type == event_type)
     return db.scalars(q).all()
 
@@ -228,7 +229,8 @@ def issue_dict(i):
 @app.get("/api/issues", response_model=list[IssueOut])
 def list_issues(crate_code: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
     q = select(Issue).join(Crate).order_by(Issue.occurred_at.desc())
-    if crate_code: q = q.where(Crate.code.contains(crate_code))
+    # 问题归属原箱体：按备用编号筛选同样命中该箱体名下的风险记录
+    if crate_code: q = q.where(Crate.code.contains(crate_code) | Crate.backup_code.contains(crate_code))
     if status: q = q.where(Issue.status == status)
     return [issue_dict(i) for i in db.scalars(q).all()]
 

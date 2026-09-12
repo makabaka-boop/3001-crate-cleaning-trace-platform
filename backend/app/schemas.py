@@ -45,7 +45,8 @@ class CrateOut(CrateBase):
 
 class EventCreate(BaseModel):
     event_no: str = Field(min_length=1, max_length=60)
-    crate_code: str = Field(min_length=1)
+    # 与批量登记逐箱使用同一 CrateCode 校验：含空格、超长或非法字符在提交校验阶段即被拒绝（422）
+    crate_code: CrateCode
     event_type: EventType
     occurred_at: datetime
     operator: str = Field(min_length=1, max_length=80)
